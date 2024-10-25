@@ -571,17 +571,17 @@ def get_rescaled_depths(imgs, E):
     pts3d = torch.stack(pts3d).detach().cpu().numpy()
     # transform point map from duster world frame to real world frame
     pts3d = apply_cRT_pts(pts3d, c, R, T)
-    #visualize_valid_3d_points(pts3d[0], scene.get_masks()[0].detach().cpu().numpy())
+    visualize_valid_3d_points(pts3d[0], scene.get_masks()[0].detach().cpu().numpy())
 
     # transform extrinsic from duster to real world frame
     duster_rw_poses = apply_cRT_to_E(duster_vw_poses, c, R, T)
-    #visualize_points_with_labels(duster_rw_poses[:, :3, 3], E[:, :3, 3])
+    visualize_points_with_labels(duster_rw_poses[:, :3, 3], E[:, :3, 3])
 
     
     # get real world local depth (z) : (#imgs, 384, 512)
     scaled_depth = transform_to_depth_map(pts3d, duster_rw_poses)
-    #plt.imshow(scaled_depth[0])
-    #plt.show()
+    plt.imshow(scaled_depth[0])
+    plt.show()
     #print(scaled_depth.shape)
     
     # get real world local point cloud: (#imgs, 384, 512, 3)
