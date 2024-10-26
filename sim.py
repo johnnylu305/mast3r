@@ -632,7 +632,7 @@ def get_rescaled_depths(imgs, E, model, I=None):
     pts3d = torch.stack(pts3d).detach().cpu().numpy()
     # transform point map from duster world frame to real world frame
     pts3d = apply_cRT_pts(pts3d, c, R, T)
-    visualize_valid_3d_points(pts3d[0], scene.get_masks()[0].detach().cpu().numpy())
+    #visualize_valid_3d_points(pts3d[0], scene.get_masks()[0].detach().cpu().numpy())
 
     # transform extrinsic from duster to real world frame
     duster_rw_poses = apply_cRT_to_E(duster_vw_poses, c, R, T)
@@ -838,7 +838,60 @@ def get_nbv(local_pts3d, masks, duster_poses, duster_imgs, model):
     yaw = actions[:, 3:4] * np.pi
     pitch = (actions[:, 4:5] + 1/5.) / 2. * np.pi * 5/6.
 
+    actions = np.concatenate([xyz, pitch, yaw], axis=1)
+
     return actions
+
+
+def visualize_viewpoints(destinations):
+    """
+    Visualizes the viewpoints and look-at vectors in a forward-left-up coordinate system.
+    
+    Parameters:
+    - destinations: List of numpy arrays where each array represents a viewpoint 
+      in the format [x, y, z, pitch, yaw] with yaw and pitch in radians.
+    """
+    
+    # Initialize a 3D plot
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+
+    # Define a function to convert pitch and yaw to a direction vector using scipy Euler angles
+    def pitch_yaw_to_vector(pitch, yaw):
+        # Use scipy's Euler to create a rotation matrix from pitch and yaw
+        # In scipy, 'xyz' refers to intrinsic rotations, so we use it to represent pitch (around y) and yaw (around z)
+        r = R.from_euler('zy', [yaw, pitch], degrees=False)  # Rotation based on yaw and pitch
+        # The forward direction is the rotated vector of [1, 0, 0] in this system
+        direction = r.apply([1, 0, 0])  # Applying the rotation to the forward direction vector
+        return direction
+
+    # Visualize each viewpoint as a point and its looking vector
+    for idx, vp in enumerate(destinations, start=1):
+        xyz = vp[0][:3]  # Position (x, y, z)
+        pitch = vp[0][3] # Pitch angle
+        yaw = vp[0][4]   # Yaw angle
+        
+        # Plot the viewpoint as a point
+        ax.scatter(xyz[0], xyz[1], xyz[2], color='b', label=f'Viewpoint {idx}')
+        
+        # Label the points with their index
+        ax.text(xyz[0], xyz[1], xyz[2], f'{idx}', fontsize=12, color='black')
+        
+        # Calculate the looking direction vector and plot it as an arrow
+        direction = pitch_yaw_to_vector(pitch, yaw)
+        ax.quiver(xyz[0], xyz[1], xyz[2], direction[0], direction[1], direction[2], length=0.5, color='r')
+
+    # Plot the origin (0, 0, 0) as a reference point
+    ax.scatter(0, 0, 0, color='g', s=100, label='Origin')
+    ax.text(0, 0, 0, 'Origin', fontsize=12, color='black')
+
+    # Set plot labels and show the 3D plot
+    ax.set_xlabel('X (Forward)')
+    ax.set_ylabel('Y (Left)')
+    ax.set_zlabel('Z (Up)')
+    ax.set_title('Viewpoints and Looking Vectors in Forward-Left-Up System')
+    plt.show()
+
 
 def main():
     img_root = os.path.join(os.sep, "home", "dsr", "Documents", "mad3d", "mast3r", "dataset", "opera_house_marker_40d")
@@ -858,10 +911,12 @@ def main():
     duster_model = AsymmetricMASt3R.from_pretrained(model_name).cuda()
 
     # initial rl model
-    model_name = os.path.join(os.sep, "home", "dsr", "Documents", "mad3d", "IsaacLab", "logs", "sb3", "Isaac-Quadcopter-Direct-v1", "camera_image_face_rand", "model_13824000_steps")
+    model_name = os.path.join(os.sep, "home", "dsr", "Documents", "mad3d", "IsaacLab", "logs", "sb3", "Isaac-Quadcopter-Direct-v1", "camera_image_face_fix", "model_7168000_steps")
     nbv_model = PPO.load(model_name)
 
     I = np.array([[986.78, 0, 721.19], [0, 964.98, 547.47], [0, 0, 0]])
+
+    destinations = []
 
     for i in range(3, 10, 1):
         # initial images (at least 2)
@@ -880,11 +935,14 @@ def main():
         local_pts3d, masks, duster_poses, duster_imgs = get_rescaled_depths(np.array(imgs), poses_trans, duster_model, I)
         
         destination = get_nbv(local_pts3d, masks, duster_poses, duster_imgs, nbv_model)
+        print(destination)
+        destinations.append(destination)
         #exit()
         #if i%3==0:
         #    visualize_world_point_cloud(local_pts3d, masks, duster_poses, duster_imgs)
 
-
+    #print(destinations)
+    visualize_viewpoints(destinations)
 
 if __name__ == '__main__':
     main()
