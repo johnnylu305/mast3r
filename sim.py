@@ -893,6 +893,108 @@ def visualize_viewpoints(destinations):
     plt.show()
 
 
+def generate_waypoints(start, end, n, h):
+    # Decompose start and end positions
+    start_x, start_y, start_z, start_roll, start_pitch, start_yaw = start
+    end_x, end_y, end_z, end_pitch, end_yaw = end[0]  # Assuming end is a 2D array
+
+    # Convert start pitch and yaw to radians, if needed
+    start_pitch, start_yaw = np.radians([start_pitch, start_yaw])  # Convert to radians
+
+    # Check if ascent phase is necessary
+    if start_z < h:
+        # Split n into three parts for ascent, horizontal movement, and descent
+        n1 = n // 3
+        n2 = n // 3
+        n3 = n - n1 - n2
+
+        # Phase 1: Ascend to the specified height `h`
+        waypoints_phase1 = [
+            [
+                start_x,
+                start_y,
+                np.linspace(start_z, h, n1)[i],
+                start_roll,   # Keep roll constant
+                start_pitch,  # Keep pitch constant
+                start_yaw     # Keep yaw constant
+            ]
+            for i in range(n1)
+        ]
+    else:
+        # If start_z >= h, skip ascent phase
+        n1 = 0
+        n2 = n // 2
+        n3 = n - n2
+        waypoints_phase1 = []
+
+    # Phase 2: Move horizontally to target x, y at height `h` or `start_z`
+    target_z = h if start_z < h else start_z
+    waypoints_phase2 = [
+        [
+            np.linspace(start_x, end_x, n2)[i],
+            np.linspace(start_y, end_y, n2)[i],
+            target_z,
+            start_roll,   # Keep roll constant
+            start_pitch,  # Keep pitch constant
+            start_yaw     # Keep yaw constant
+        ]
+        for i in range(n2)
+    ]
+
+    # Phase 3: Descend to target z while changing roll, pitch, and yaw
+    waypoints_phase3 = [
+        [
+            end_x,
+            end_y,
+            np.linspace(target_z, end_z, n3)[i],
+            start_roll,  # Change roll to the final target
+            np.linspace(start_pitch, end_pitch, n3)[i],
+            np.linspace(start_yaw, end_yaw, n3)[i]
+        ]
+        for i in range(n3)
+    ]
+
+    # Combine all phases
+    waypoints = waypoints_phase1 + waypoints_phase2 + waypoints_phase3
+
+    return np.array(waypoints)
+
+
+def write_waypoints_to_file(waypoints, filename):
+    # Open the file in write mode
+    with open(filename, 'w') as f:
+        for waypoint in waypoints:
+            # Convert each waypoint to a string with space-separated values and write it
+            line = ' '.join(map(str, waypoint))
+            f.write(line + '\n')
+
+
+def visualize_waypoints(waypoints, start, end):
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # Extract x, y, z coordinates from waypoints
+    x_coords = waypoints[:, 0]
+    y_coords = waypoints[:, 1]
+    z_coords = waypoints[:, 2]
+    
+    # Plot waypoints as a line in 3D space
+    ax.plot(x_coords, y_coords, z_coords, label="Path", marker='o')
+    
+    # Mark start and end points
+    ax.scatter(start[0], start[1], start[2], color='green', s=100, label="Start")
+    ax.scatter(end[0][0], end[0][1], end[0][2], color='red', s=100, label="End")
+    
+    # Labels and legend
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.set_zlabel('Z')
+    ax.legend()
+    ax.set_title("Drone Waypoints")
+    
+    plt.show()
+
+
 def main():
     img_root = os.path.join(os.sep, "home", "dsr", "Documents", "mad3d", "mast3r", "dataset", "opera_house_marker_40d")
     
@@ -918,6 +1020,11 @@ def main():
 
     destinations = []
 
+    # three initial viewpoints
+    write_waypoints_to_file([[0.0136594, -0.896833, 1.23897, 0.0, 0.56, 1.55]], os.path.join(img_root, f"waypoints_{0:02d}.txt"))
+    write_waypoints_to_file([[0.371544, -0.892484, 1.20364, 0.0, 0.56, 1.96]], os.path.join(img_root, f"waypoints_{1:02d}.txt"))
+    write_waypoints_to_file([[0.632161, -0.663798, 1.21174, 0.0, 0.56, 2.2]], os.path.join(img_root, f"waypoints_{2:02d}.txt"))
+
     for i in range(3, 10, 1):
         # initial images (at least 2)
         while not get_new_images(imgs, i, img_root):
@@ -934,9 +1041,16 @@ def main():
         # coordinate system is forward, left, up
         local_pts3d, masks, duster_poses, duster_imgs = get_rescaled_depths(np.array(imgs), poses_trans, duster_model, I)
         
+        # xyzpy
         destination = get_nbv(local_pts3d, masks, duster_poses, duster_imgs, nbv_model)
-        print(destination)
+
+        # xyzrpy
+        waypoints = generate_waypoints(poses[-1], destination, n=10, h=1.2)
+        write_waypoints_to_file(waypoints, os.path.join(img_root, f"waypoints_{i:02d}.txt"))
+        #visualize_waypoints(waypoints, poses[-1], destination)
+
         destinations.append(destination)
+        
         #exit()
         #if i%3==0:
         #    visualize_world_point_cloud(local_pts3d, masks, duster_poses, duster_imgs)
