@@ -1,5 +1,5 @@
 import sys
-sys.path.append("/home/dsr/Documents/mad3d/IsaacLab")
+sys.path.append("/home/dsr/Documents/demo/IsaacLab")
 import source
 import os
 import numpy as np
@@ -11,7 +11,7 @@ import trimesh
 from PIL import Image
 from scipy.spatial.transform import Rotation as R
 from stable_baselines3 import PPO
-sys.path.append("/home/dsr/Documents/mad3d/IsaacLab/source/extensions/omni.isaac.lab_tasks/omni/isaac/lab_tasks/direct/single_drone")
+sys.path.append("/home/dsr/Documents/demo/IsaacLab/source/extensions/omni.isaac.lab_tasks/omni/isaac/lab_tasks/direct/single_drone")
 from utils import OccupancyGrid, get_seen_face
 
 
@@ -996,7 +996,7 @@ def visualize_waypoints(waypoints, start, end):
 
 
 def main():
-    img_root = os.path.join(os.sep, "home", "dsr", "Documents", "mad3d", "mast3r", "dataset", "opera_house_marker_40d")
+    img_root = os.path.join(os.sep, "home", "dsr", "Documents", "demo", "mast3r", "dataset", "opera_house_marker_40d")
     
     # text path
     txt_file = os.path.join(img_root, "transform_record.txt")    
@@ -1013,7 +1013,7 @@ def main():
     duster_model = AsymmetricMASt3R.from_pretrained(model_name).cuda()
 
     # initial rl model
-    model_name = os.path.join(os.sep, "home", "dsr", "Documents", "mad3d", "IsaacLab", "logs", "sb3", "Isaac-Quadcopter-Direct-v1", "camera_image_face_fix", "model_7168000_steps")
+    model_name = os.path.join(os.sep, "home", "dsr", "Documents", "demo", "IsaacLab", "logs", "sb3", "Isaac-Quadcopter-Direct-v1", "camera_image_face_fix", "model_7168000_steps")
     nbv_model = PPO.load(model_name)
 
     I = np.array([[986.78, 0, 721.19], [0, 964.98, 547.47], [0, 0, 0]])
