@@ -3,16 +3,18 @@ sys.path.append("/home/dsr/Documents/demo/IsaacLab")
 import source
 import os
 import numpy as np
+import time
 import glob
 import torchvision.transforms as tvf
 import cv2
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 import trimesh
 from PIL import Image
 from scipy.spatial.transform import Rotation as R
 from stable_baselines3 import PPO
 sys.path.append("/home/dsr/Documents/demo/IsaacLab/source/extensions/omni.isaac.lab_tasks/omni/isaac/lab_tasks/direct/single_drone")
-from utils import OccupancyGrid, get_seen_face
+from utils_mad3d import OccupancyGrid, get_seen_face
 
 
 import mast3r.utils.path_to_dust3r
@@ -51,8 +53,12 @@ def drone_to_camera_pose(xyz, rpy):
 
 
 def get_new_poses(data, num_lines, txt_file):
-    with open(txt_file, 'r') as file:
-        lines = file.readlines()
+
+    if os.path.exists(txt_file):
+        with open(txt_file, 'r') as file:
+            lines = file.readlines()
+    else:
+        return False
 
     # ensure we have enough lines to read
     if len(lines) >= num_lines:
@@ -80,6 +86,7 @@ def get_new_images(imgs, num_img, img_root):
     
     # see new images
     if len(img_paths) >= num_img:
+        time.sleep(5)
         # read new images
         for i in range(len(imgs), num_img, 1):
             img = Image.open(img_paths[i])
@@ -996,6 +1003,7 @@ def visualize_waypoints(waypoints, start, end):
 
 
 def main():
+    #img_root = os.path.join(os.sep, "home", "dsr", "Documents", "demo", "mast3r", "dataset", "example")
     img_root = os.path.join(os.sep, "home", "dsr", "Documents", "demo", "mast3r", "dataset", "opera_house_marker_40d")
     
     # text path
