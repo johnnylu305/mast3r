@@ -1,4 +1,5 @@
 import sys
+# make sure the IsaacLab is the same to the trained model
 sys.path.append("/home/dsr/Documents/demo/IsaacLab")
 import source
 import os
@@ -8,13 +9,17 @@ import glob
 import torchvision.transforms as tvf
 import cv2
 import matplotlib.pyplot as plt
+from heapq import heappush, heappop
 from mpl_toolkits.mplot3d import Axes3D
 import trimesh
 from PIL import Image
 from scipy.spatial.transform import Rotation as R
-from stable_baselines3 import PPO
+from colorama import Fore, Style
+# make sure the IsaacLab is the same to the trained model
 sys.path.append("/home/dsr/Documents/demo/IsaacLab/source/extensions/omni.isaac.lab_tasks/omni/isaac/lab_tasks/direct/single_drone")
 from utils_mad3d import OccupancyGrid, get_seen_face
+sys.path.append("/home/dsr/Documents/demo/IsaacLab/source/standalone/mad3d")
+from sb3_ppo_cus import PPO_Cus
 
 
 import mast3r.utils.path_to_dust3r
@@ -27,6 +32,9 @@ from dust3r.demo import get_3D_model_from_scene
 from dust3r.image_pairs import make_pairs
 from dust3r.viz import *
 
+
+ENV_SIZE = 2.7 #2.6 #3
+GRID_SIZE = 20
 
 
 def drone_to_camera_pose(xyz, rpy):
@@ -83,7 +91,7 @@ def get_new_poses(data, num_lines, txt_file):
 
 def get_new_images(imgs, num_img, img_root):
     img_paths = sorted(glob.glob(os.path.join(img_root, "*.jpg")))
-    
+    print(len(img_paths), num_img) 
     # see new images
     if len(img_paths) >= num_img:
         time.sleep(5)
@@ -639,7 +647,7 @@ def get_rescaled_depths(imgs, E, model, I=None):
     pts3d = torch.stack(pts3d).detach().cpu().numpy()
     # transform point map from duster world frame to real world frame
     pts3d = apply_cRT_pts(pts3d, c, R, T)
-    #visualize_valid_3d_points(pts3d[0], scene.get_masks()[0].detach().cpu().numpy())
+    visualize_valid_3d_points(pts3d[0], scene.get_masks()[0].detach().cpu().numpy())
 
     # transform extrinsic from duster to real world frame
     duster_rw_poses = apply_cRT_to_E(duster_vw_poses, c, R, T)
@@ -775,13 +783,13 @@ def get_occ_and_face(grid, obv_face, points_3d_cam, poses, masks, env_size, grid
 
 def get_nbv(local_pts3d, masks, duster_poses, duster_imgs, model):
     # get observation
-    # imgs: (batch, 2*3, 300, 300), 
-    # poses: (batch, 50*5+1) in ros (flu), 
+    # imgs: (batch, 1*1, 300, 300), 
+    # poses: (batch, 5+1) in ros (flu), xyz, pitch, yaw, h
     # grid: (batch, 10, 20, 20, 20) occ,x,y,z,face
 
     # assume env size is 3m x 3m x 3m
-    env_size = 3
-    grid_size = 20
+    env_size = ENV_SIZE
+    grid_size = GRID_SIZE
     device = 'cuda'
     decrement = 0.01
     increment = 1.0
@@ -789,23 +797,26 @@ def get_nbv(local_pts3d, masks, duster_poses, duster_imgs, model):
     min_log_odds = -10.
 
     # images alreadly normalized
-    obv_imgs = np.zeros((1, 2, 300, 300, 3))
-    obv_imgs[0, 0] = np.array(cv2.resize(duster_imgs[-1], (300, 300)))
-    if len(duster_imgs) >= 2:
-        obv_imgs[0, 1] = np.array(cv2.resize(duster_imgs[-2], (300, 300)))
+    obv_imgs = np.zeros((1, 1, 300, 300, 1))
+    # the last one is the newest image 
+    # resize the image
+    resized_image = cv2.resize(duster_imgs[-1], (300, 300))
+    # Convert to grayscale by taking the mean of RGB channels
+    grayscale_image = np.mean(resized_image, axis=-1)
+    # Assign the grayscale image (has norm) to the array
+    obv_imgs[0, 0, :, :, 0] = grayscale_image
 
     # poses
-    obv_poses = np.zeros((1, 50, 5))
-    obv_poses[0, :len(duster_poses), :3] = duster_poses[:, :3, 3]
-    # TODO: rethinking about this
-    obv_poses[0, :len(duster_poses), :3] /= env_size
+    obv_poses = np.zeros((1, 6))
+    obv_poses[0, :3] = duster_poses[-1, :3, 3]
+    obv_poses[0, :3] /= env_size
     # convert rotation matrices to roll, pitch, yaw in radians
     r = R.from_matrix(duster_poses[:, :3, :3])
     rpy = r.as_euler('xyz', degrees=False)
-    obv_poses[0, :len(duster_poses), 3:] = rpy[:, 1:]
-    obv_poses[0, :len(duster_poses), 3:] /= 3.15
-    obv_poses = np.concatenate([obv_poses.reshape(1, -1), (np.array([[len(duster_poses)]])/50)], axis=1)
-    #print(obv_poses)
+    obv_poses[0, 3:5] = rpy[-1, 1:]
+    obv_poses[0, 3:5] /= 3.15
+    # height limit
+    obv_poses[0, 5] = np.floor(1.5/env_size*grid_size)/grid_size
 
     # grid
     # occ
@@ -835,19 +846,54 @@ def get_nbv(local_pts3d, masks, duster_poses, duster_imgs, model):
     obv_occ[0, :, :, :, 4:] = face.cpu().numpy()
 
     obv = {"pose_step": obv_poses,
-           "img": np.transpose(obv_imgs, (0, 1, 4, 2, 3)).reshape(-1, 2 * 3, 300, 300),
-           "occ": np.transpose(obv_occ, (0, 4, 1, 2, 3))}
+           "img": np.transpose(obv_imgs, (0, 1, 4, 2, 3)).reshape(-1, 1 * 1, 300, 300),
+           "occ": np.transpose(obv_occ, (0, 4, 1, 2, 3)),
+           "env_size": torch.ones((1, 1)) * env_size,
+           "aux_center": torch.zeros((1, 3))
+           }
 
     actions, _ = model.predict(obv)
 
-    xyz = actions[:, :3]
-    xyz = (xyz + np.array([0., 0., 1.])) * np.array([env_size/2.0 - 0.5, env_size/2.0 - 0.5, env_size/4.0])
-    yaw = actions[:, 3:4] * np.pi
-    pitch = (actions[:, 4:5] + 1/5.) / 2. * np.pi * 5/6.
+    # nearest xyz
+    _xyz = actions[:, :3]
+    _xyz = (_xyz + np.array([0., 0., 1.])) * np.array([env_size/2.0 - 1e-3, env_size/2.0 - 1e-3, env_size/2.0 - 1e-3])
 
-    actions = np.concatenate([xyz, pitch, yaw], axis=1)
+    # 0~1
+    lookatxyz = actions[:, 3:6]
+    # -1~1
+    lookatxyz = lookatxyz * 2 - 1
+    # to real-world xyz
+    lookatxyz = (lookatxyz + np.array([0., 0., 1.])) * np.array([env_size/2.0 - 1e-3, env_size/2.0 - 1e-3, env_size/2.0 - 1e-3])
 
-    return actions
+    # compute yaw and pitch
+    dxyz = lookatxyz - _xyz + 1e-6
+
+    # calculate yaw using NumPy functions
+    # -pi~pi
+    _yaw = np.arctan2(dxyz[:, 1], dxyz[:, 0])
+
+    # calculate pitch using NumPy functions
+    # -pi/2~pi/2
+    _pitch = np.arctan2(dxyz[:, 2], np.sqrt(dxyz[:, 0]**2 + dxyz[:, 1]**2))
+
+    # to positive: downward, negative: upward
+    _pitch *= -1
+
+    # normalize pitch as specified
+    # -pi/3~pi/2 which is -60-90
+    _pitch = np.clip(_pitch, a_min=-np.pi/3, a_max=np.pi/2)
+
+
+    _pitch = np.expand_dims(_pitch, axis=0)
+    _yaw = np.expand_dims(_yaw, axis=0)  
+
+    # assume drone xyz is camera xyz
+    actions = np.concatenate([_xyz, _pitch, _yaw], axis=1)
+
+
+    hard_occ = torch.where(occ[0, :, :, :] >= 0.6, 1, 0)
+    # return hard occ for path planning
+    return actions, hard_occ
 
 
 def visualize_viewpoints(destinations):
@@ -867,7 +913,7 @@ def visualize_viewpoints(destinations):
     def pitch_yaw_to_vector(pitch, yaw):
         # Use scipy's Euler to create a rotation matrix from pitch and yaw
         # In scipy, 'xyz' refers to intrinsic rotations, so we use it to represent pitch (around y) and yaw (around z)
-        r = R.from_euler('zy', [yaw, pitch], degrees=False)  # Rotation based on yaw and pitch
+        r = R.from_euler('ZY', [yaw, pitch], degrees=False)  # Rotation based on yaw and pitch
         # The forward direction is the rotated vector of [1, 0, 0] in this system
         direction = r.apply([1, 0, 0])  # Applying the rotation to the forward direction vector
         return direction
@@ -921,7 +967,7 @@ def generate_waypoints(start, end, n, h):
                 start_x,
                 start_y,
                 np.linspace(start_z, h, n1)[i],
-                start_roll,   # Keep roll constant
+                0,   # Keep roll constant
                 start_pitch,  # Keep pitch constant
                 start_yaw     # Keep yaw constant
             ]
@@ -941,7 +987,7 @@ def generate_waypoints(start, end, n, h):
             np.linspace(start_x, end_x, n2)[i],
             np.linspace(start_y, end_y, n2)[i],
             target_z,
-            start_roll,   # Keep roll constant
+            0,   # Keep roll constant
             start_pitch,  # Keep pitch constant
             start_yaw     # Keep yaw constant
         ]
@@ -954,7 +1000,7 @@ def generate_waypoints(start, end, n, h):
             end_x,
             end_y,
             np.linspace(target_z, end_z, n3)[i],
-            start_roll,  # Change roll to the final target
+            0,  # Change roll to the final target
             np.linspace(start_pitch, end_pitch, n3)[i],
             np.linspace(start_yaw, end_yaw, n3)[i]
         ]
@@ -1001,10 +1047,240 @@ def visualize_waypoints(waypoints, start, end):
     
     plt.show()
 
+def current_time():
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+def is_valid_3d(grid, x, y, z):
+    """Check if a point is within the 3D grid and not an obstacle."""
+    x_max, y_max, z_max = grid.shape
+    return 0 <= x < x_max and 0 <= y < y_max and 0 <= z < z_max and grid[x, y, z] == 0
+
+def heuristic_3d(a, b):
+    """Heuristic function for A* (Euclidean distance)."""
+    return np.linalg.norm(np.array(a) - np.array(b))
+
+def get_neighbors_3d(point):
+    """Generate all 26 neighbors for a given 3D point."""
+    x, y, z = point
+    neighbors = []
+    for dx in [-1, 0, 1]:
+        for dy in [-1, 0, 1]:
+            for dz in [-1, 0, 1]:
+                if dx == 0 and dy == 0 and dz == 0:
+                    continue  # Skip the current point
+                neighbors.append((x + dx, y + dy, z + dz))
+    return neighbors
+
+def a_star_3d(grid, start, destination):
+    """A* pathfinding algorithm for a 3D grid with 26 neighbors."""
+    open_set = []
+    heappush(open_set, (0, start))
+    came_from = {}
+    g_score = {start: 0}
+    f_score = {start: heuristic_3d(start, destination)}
+    visited = set()
+    last_free_point = start  # Track the last free point visited
+
+    while open_set:
+        _, current = heappop(open_set)
+
+        # If destination is reached
+        if current == destination:
+            path = []
+            while current in came_from:
+                path.append(current)
+                current = came_from[current]
+            path.append(start)
+            return path[::-1], last_free_point
+
+        visited.add(current)
+        last_free_point = current  # Update the last free point
+
+        # Explore all 26 neighbors
+        for neighbor in get_neighbors_3d(current):
+            if not is_valid_3d(grid, neighbor[0], neighbor[1], neighbor[2]) or neighbor in visited:
+                continue
+
+            tentative_g_score = g_score[current] + 1
+            if neighbor not in g_score or tentative_g_score < g_score[neighbor]:
+                came_from[neighbor] = current
+                g_score[neighbor] = tentative_g_score
+                f_score[neighbor] = tentative_g_score + heuristic_3d(neighbor, destination)
+                heappush(open_set, (f_score[neighbor], neighbor))
+
+    # If no path found
+    return None, last_free_point
+
+def find_path_with_fallback_3d(grid, start_w, destination_w):
+    """Ensure a path to the destination exists, collision-free or not."""
+
+    env_size = ENV_SIZE
+    grid_size = GRID_SIZE
+
+    # grid to numpy
+    h = int(np.floor(1.5/env_size*grid_size))
+    grid = grid.cpu().numpy()
+    grid[:, :, h+1:] = 1
+    lh = int(np.floor(0.5/env_size*grid_size))
+    grid[:, :, :h] = 1
+    # to grid coord
+    start_w[3] = 0
+    start_w[4] = np.radians(start_w[4])
+    start_w[5] = np.radians(start_w[5])
+    start = np.array(start_w[:3])
+    destination = np.array(destination_w[0][:3])
+    
+    offset = np.array([env_size/2, env_size/2, 0])
+    start = tuple(np.floor((start+offset)*grid_size/env_size).astype(int).tolist())
+    destination = tuple(np.floor((destination+offset)*grid_size/env_size).astype(int).tolist())
+
+    path, last_free_point = a_star_3d(grid, start, destination)
+
+    dest = destination_w[0].tolist()[:3]+[0]+destination_w[0].tolist()[3:]
+
+    if path:
+        print("Collision free path")
+        path = [np.array(list(p))*env_size/grid_size-offset for p in path]
+        path = [list(p)+start_w[3:]  for p in path]
+        path = path + [dest]
+        return np.array(path)
+    else:
+        # If no collision-free path exists, find a path to the last free point
+        approach_path, _ = a_star_3d(grid, start, last_free_point)
+        if not approach_path:
+            approach_path = [start]  # If no path to the last free point, start is the fallback
+        # Link the last free point to the destination directly
+        print("Potential non-free path")
+        path = approach_path
+        path = [np.array(list(p))*env_size/grid_size-offset for p in path]
+        path = [list(p)+start_w[3:]  for p in path]
+        path = path + [dest]
+        return np.array(path)
+
+def generate_waypoints_to_boundary(start, end, w, n, h):
+    # Decompose start and end positions
+    start_x, start_y, start_z, start_roll, start_pitch, start_yaw = start
+    end_x, end_y, end_z, end_pitch, end_yaw = end[0]  # Assuming end is a 2D array
+
+    # Convert start pitch and yaw to radians if needed
+    start_pitch, start_yaw = np.radians([start_pitch, start_yaw])  # Convert to radians
+
+    # Phase 1: Ascend to the specified height `h` if needed
+    if start_z < h:
+        n1 = n // 3
+        n2 = n // 3
+        n3 = n - n1 - n2
+        waypoints_phase1 = [
+            [
+                start_x,
+                start_y,
+                np.linspace(start_z, h, n1)[i],
+                0,   # Keep roll constant
+                start_pitch,  # Keep pitch constant
+                start_yaw     # Keep yaw constant
+            ]
+            for i in range(n1)
+        ]
+    else:
+        n1 = 0
+        n2 = n // 2
+        n3 = n - n2
+        waypoints_phase1 = []
+
+    # Phase 2: Move to the nearest boundary (no change in Z)
+    target_z = h if start_z < h else start_z
+    
+    # Boundary selection logic - Move to the boundary along one axis
+    if abs(start_x) > abs(start_y):
+        # Move to the nearest x boundary
+        if start_x > 0:
+            boundary_x = w / 2  # Move to positive boundary if closer
+        else:
+            boundary_x = -w / 2  # Move to negative boundary if closer
+        boundary_y = start_y  # Keep y constant
+    else:
+        # Move to the nearest y boundary
+        if start_y > 0:
+            boundary_y = w / 2  # Move to positive boundary if closer
+        else:
+            boundary_y = -w / 2  # Move to negative boundary if closer
+        boundary_x = start_x  # Keep x constant
+
+    # Waypoints to move to the nearest boundary (no change in Z)
+    waypoints_phase2 = [
+        [
+            np.linspace(start_x, boundary_x, n2)[i],
+            np.linspace(start_y, boundary_y, n2)[i],
+            target_z,
+            0,   # Keep roll constant
+            start_pitch,  # Keep pitch constant
+            start_yaw     # Keep yaw constant
+        ]
+        for i in range(n2)
+    ]
+    
+    # Phase 3: Move along the boundary to the target boundary
+    waypoints_phase3 = []
+    
+    # If the boundary is along the x-axis, move to (ta, boundary_y)
+    if boundary_x == w / 2 or boundary_x == -w / 2:
+        # Move along the boundary (y-axis) to reach the target's y-coordinate
+        for i in range(n3):
+            waypoints_phase3.append([
+                boundary_x,  # Stay along the boundary x-coordinate
+                np.linspace(boundary_y, end_y, n3)[i],  # Move along the y-boundary
+                target_z,  # Maintain height `h`
+                0,  # Keep roll constant
+                start_pitch,  # Keep pitch constant
+                start_yaw     # Keep yaw constant
+            ])
+    # If the boundary is along the y-axis, move to (boundary_x, tb)
+    elif boundary_y == w / 2 or boundary_y == -w / 2:
+        # Move along the boundary (x-axis) to reach the target's x-coordinate
+        for i in range(n3):
+            waypoints_phase3.append([
+                np.linspace(boundary_x, end_x, n3)[i],  # Move along the x-boundary
+                boundary_y,  # Stay along the boundary y-coordinate
+                target_z,  # Maintain height `h`
+                0,  # Keep roll constant
+                start_pitch,  # Keep pitch constant
+                start_yaw     # Keep yaw constant
+            ])
+    
+    # Phase 4: Move to the target (ta, tb) while maintaining height `h`
+    waypoints_phase4 = [
+        [
+            end_x,  # Target x-coordinate
+            end_y,  # Target y-coordinate
+            target_z,  # Maintain height `h` at target boundary point
+            0,  # Keep roll constant
+            np.linspace(start_pitch, end_pitch, n3)[i],  # Change pitch gradually
+            np.linspace(start_yaw, end_yaw, n3)[i]  # Change yaw gradually
+        ]
+        for i in range(n3)
+    ]
+
+    # Phase 5: Descend to target altitude
+    waypoints_phase5 = [
+        [
+            end_x,  # Keep x-coordinate constant
+            end_y,  # Keep y-coordinate constant
+            np.linspace(target_z, end_z, n3)[i],  # Descend to target z
+            0,  # Keep roll constant
+            np.linspace(start_pitch, end_pitch, n3)[i],  # Gradually adjust pitch
+            np.linspace(start_yaw, end_yaw, n3)[i]  # Gradually adjust yaw
+        ]
+        for i in range(n3)
+    ]
+    
+    # Combine all phases
+    waypoints = waypoints_phase1 + waypoints_phase2 + waypoints_phase3 + waypoints_phase4 + waypoints_phase5
+
+    return np.array(waypoints)
 
 def main():
-    #img_root = os.path.join(os.sep, "home", "dsr", "Documents", "demo", "mast3r", "dataset", "example")
-    img_root = os.path.join(os.sep, "home", "dsr", "Documents", "demo", "mast3r", "dataset", "opera_house_marker_40d")
+    img_root = os.path.join(os.sep, "home", "dsr", "Documents", "demo", "mast3r", "dataset", "example")
+    #img_root = os.path.join(os.sep, "home", "dsr", "Documents", "demo", "mast3r", "dataset", "opera_house_marker_40d")
     
     # text path
     txt_file = os.path.join(img_root, "transform_record.txt")    
@@ -1021,27 +1297,44 @@ def main():
     duster_model = AsymmetricMASt3R.from_pretrained(model_name).cuda()
 
     # initial rl model
-    model_name = os.path.join(os.sep, "home", "dsr", "Documents", "demo", "IsaacLab", "logs", "sb3", "Isaac-Quadcopter-Direct-v1", "camera_image_face_fix", "model_7168000_steps")
-    nbv_model = PPO.load(model_name)
+    model_name = os.path.join(os.sep, "home", "dsr", "Documents", "demo", "model", "camera_image_envsize20_30000rand_obja_lrsch_dilatednearest", "model_4608000_steps.zip")
+    #model_name = os.path.join(os.sep, "home", "dsr", "Documents", "demo", "model", "camera_image_envsize20_30000rand_obja_lrsch_dilatednearest", "model_4864000_steps.zip")
+    nbv_model = PPO_Cus.load(model_name)
 
     I = np.array([[986.78, 0, 721.19], [0, 964.98, 547.47], [0, 0, 0]])
 
     destinations = []
 
-    # three initial viewpoints
-    write_waypoints_to_file([[0.0136594, -0.896833, 1.23897, 0.0, 0.56, 1.55]], os.path.join(img_root, f"waypoints_{0:02d}.txt"))
-    write_waypoints_to_file([[0.371544, -0.892484, 1.20364, 0.0, 0.56, 1.96]], os.path.join(img_root, f"waypoints_{1:02d}.txt"))
-    write_waypoints_to_file([[0.632161, -0.663798, 1.21174, 0.0, 0.56, 2.2]], os.path.join(img_root, f"waypoints_{2:02d}.txt"))
+    #init_points = [[0.0136594, -0.896833, 1.23897, 0.0, 0.56, 1.55],
+    #               [0.371544, -0.892484, 1.20364, 0.0, 0.56, 1.96],
+    #               [0.632161, -0.663798, 1.21174, 0.0, 0.56, 2.2]]
 
-    for i in range(3, 10, 1):
+    # demo opera house
+    init_points = [[-1.0,  -1.34, 0.5, 0.0, 0.1, 1.0],
+                   [-1.2,  -1.24, 0.55, 0.0, 0.2, 0.7],
+                   [-1.1,  -1.34, 1.2, 0.0, 0.7, 0.7]]
+
+    # demo shifted opera house
+    #init_points = [[-1.0,  -1.3, 1.4, 0.0, 0.8, 0.7],
+    #               [-1.2,  -1.2, 0.6, 0.0, 0.4, 0.7],
+    #               [-1.1,  -1.1, 1.2, 0.0, 0.75, 0.7]]
+
+    # three initial viewpoints
+    write_waypoints_to_file([init_points[0]], os.path.join(img_root, f"waypoints_{0:02d}.txt"))
+    write_waypoints_to_file([init_points[1]], os.path.join(img_root, f"waypoints_{1:02d}.txt"))
+    write_waypoints_to_file([init_points[2]], os.path.join(img_root, f"waypoints_{2:02d}.txt"))
+
+    for i in range(3, 20, 1):
         # initial images (at least 2)
         while not get_new_images(imgs, i, img_root):
-            print(f"waiting for images")
+            print(f"{Fore.YELLOW}[{current_time()}] Waiting for new images...{Style.RESET_ALL}")
+            time.sleep(0.5)
         print(f"Successfully read new images")
 
         # corresponding poses
         while not get_new_poses(poses, i, txt_file):
-            print(f"waiting for poses")       
+            print(f"{Fore.YELLOW}[{current_time()}] Waiting for new poses...{Style.RESET_ALL}")
+            time.sleep(0.5)
         print(f"Successfully read new poses")
 
 
@@ -1050,20 +1343,25 @@ def main():
         local_pts3d, masks, duster_poses, duster_imgs = get_rescaled_depths(np.array(imgs), poses_trans, duster_model, I)
         
         # xyzpy
-        destination = get_nbv(local_pts3d, masks, duster_poses, duster_imgs, nbv_model)
+        destination, occ = get_nbv(local_pts3d, masks, duster_poses, duster_imgs, nbv_model)
 
         # xyzrpy
-        waypoints = generate_waypoints(poses[-1], destination, n=10, h=1.2)
-        write_waypoints_to_file(waypoints, os.path.join(img_root, f"waypoints_{i:02d}.txt"))
-        #visualize_waypoints(waypoints, poses[-1], destination)
+        waypoints = generate_waypoints(poses[-1], destination, n=10, h=1.5)
+        #waypoints = generate_waypoints_to_boundary(poses[-1], destination, w=ENV_SIZE, n=10, h=1.5)
+        #waypoints = find_path_with_fallback_3d(occ, poses[-1], destination)
+        print(waypoints)
+        #write_waypoints_to_file(waypoints, os.path.join(img_root, f"waypoints_{i:02d}.txt"))
+        write_waypoints_to_file(waypoints, os.path.join(img_root, f"waypoints_0{i}.txt"))
+        # visualize waypoints if needed
+        visualize_waypoints(waypoints, poses[-1], destination)
 
         destinations.append(destination)
         
         #exit()
         #if i%3==0:
-        #    visualize_world_point_cloud(local_pts3d, masks, duster_poses, duster_imgs)
-
-    #print(destinations)
+        visualize_world_point_cloud(local_pts3d, masks, duster_poses, duster_imgs)
+    
+    destinations = [np.array([row[:3]+row[4:]]) for row in init_points] + destinations
     visualize_viewpoints(destinations)
 
 if __name__ == '__main__':
