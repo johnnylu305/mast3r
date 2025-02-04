@@ -16,9 +16,9 @@ from PIL import Image
 from scipy.spatial.transform import Rotation as R
 from colorama import Fore, Style
 # make sure the IsaacLab is the same to the trained model
-sys.path.append("/home/dsr/Documents/demo/IsaacLab/source/extensions/omni.isaac.lab_tasks/omni/isaac/lab_tasks/direct/single_drone")
+sys.path.append("/home/dsr/Documents/demo/isaac-sim-new/home/IsaacLab/source/extensions/omni.isaac.lab_tasks/omni/isaac/lab_tasks/direct/single_drone")
 from utils_mad3d import OccupancyGrid, get_seen_face
-sys.path.append("/home/dsr/Documents/demo/IsaacLab/source/standalone/mad3d")
+sys.path.append("/home/dsr/Documents/demo/isaac-sim-new/home/IsaacLab/source/standalone/mad3d")
 from sb3_ppo_cus import PPO_Cus
 
 
@@ -1359,8 +1359,7 @@ def main():
     duster_model = AsymmetricMASt3R.from_pretrained(model_name).cuda()
 
     # initial rl model
-    model_name = os.path.join(os.sep, "home", "dsr", "Documents", "demo", "model", "camera_image_envsize20_30000rand_obja_lrsch_dilatednearest", "model_4608000_steps.zip")
-    #model_name = os.path.join(os.sep, "home", "dsr", "Documents", "demo", "model", "camera_image_envsize20_30000rand_obja_lrsch_dilatednearest", "model_4864000_steps.zip")
+    model_name = os.path.join(os.sep, "home", "dsr", "Documents", "demo", "model", "Env3", "model_4864000_steps.zip")
     nbv_model = PPO_Cus.load(model_name)
 
     I = np.array([[986.78, 0, 721.19], [0, 964.98, 547.47], [0, 0, 0]])
