@@ -1037,7 +1037,11 @@ def visualize_waypoints(waypoints, start, end):
     # Mark start and end points
     ax.scatter(start[0], start[1], start[2], color='green', s=100, label="Start")
     ax.scatter(end[0][0], end[0][1], end[0][2], color='red', s=100, label="End")
-    
+   
+    ax.set_xlim([-ENV_SIZE/2, ENV_SIZE/2])
+    ax.set_ylim([-ENV_SIZE/2, ENV_SIZE/2])
+    ax.set_zlim([0, ENV_SIZE])
+
     # Labels and legend
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
@@ -1157,126 +1161,184 @@ def find_path_with_fallback_3d(grid, start_w, destination_w):
         path = path + [dest]
         return np.array(path)
 
-def generate_waypoints_to_boundary(start, end, w, n, h):
-    # Decompose start and end positions
-    start_x, start_y, start_z, start_roll, start_pitch, start_yaw = start
-    end_x, end_y, end_z, end_pitch, end_yaw = end[0]  # Assuming end is a 2D array
 
-    # Convert start pitch and yaw to radians if needed
-    start_pitch, start_yaw = np.radians([start_pitch, start_yaw])  # Convert to radians
+def generate_waypoints_to_boundary(S, E, n, num_points=10):
+    """
+    Generate waypoints from pose S to pose E by hugging the square boundary
+    at x = ±n/2 or y = ±n/2, changing only one axis at a time.
 
-    # Phase 1: Ascend to the specified height `h` if needed
-    if start_z < h:
-        n1 = n // 3
-        n2 = n // 3
-        n3 = n - n1 - n2
-        waypoints_phase1 = [
-            [
-                start_x,
-                start_y,
-                np.linspace(start_z, h, n1)[i],
-                0,   # Keep roll constant
-                start_pitch,  # Keep pitch constant
-                start_yaw     # Keep yaw constant
-            ]
-            for i in range(n1)
-        ]
-    else:
-        n1 = 0
-        n2 = n // 2
-        n3 = n - n2
-        waypoints_phase1 = []
+    S = (Sx, Sy, Sz, S_roll, S_pitch, S_yaw)
+    E = [[Ex, Ey, Ez, E_pitch, E_yaw]] or a similar structure (5 items).
+    n = side length of the square boundary (±n/2).
+    num_points = how many sub-steps to use for each 1D (axis) motion.
 
-    # Phase 2: Move to the nearest boundary (no change in Z)
-    target_z = h if start_z < h else start_z
-    
-    # Boundary selection logic - Move to the boundary along one axis
-    if abs(start_x) > abs(start_y):
-        # Move to the nearest x boundary
-        if start_x > 0:
-            boundary_x = w / 2  # Move to positive boundary if closer
+    Returns a NumPy array of shape (N, 6), each row:
+      [x, y, z, roll, pitch, yaw].
+    """
+
+    # ---------------------------------------------------------------------
+    # Unpack start and end
+    # ---------------------------------------------------------------------
+    Sx, Sy, Sz, Sroll, Spitch, Syaw = S
+    Ex, Ey, Ez, Epitch, Eyaw_ = E[0]  # if E is a nested list
+
+    # Force roll to zero along the path (if that's your rule):
+    Sroll = 0.0
+    Eroll = 0.0
+
+    # This list will accumulate the final path
+    waypoints = []
+
+    # ---------------------------------------------------------------------
+    # Helper: "move one axis at a time" with exactly num_points per axis
+    # ---------------------------------------------------------------------
+    def move_one_axis_at_a_time(start_pose, end_pose, steps_per_axis):
+        (x1, y1, z1, r1, p1, yw1) = start_pose
+        (x2, y2, z2, r2, p2, yw2) = end_pose
+
+        seg_waypoints = []
+
+        def interp(a_start, a_end, N):
+            return np.linspace(a_start, a_end, N)
+
+        # X-segment
+        if x1 != x2:
+            xs = interp(x1, x2, steps_per_axis)
         else:
-            boundary_x = -w / 2  # Move to negative boundary if closer
-        boundary_y = start_y  # Keep y constant
+            xs = np.array([x1]*steps_per_axis)
+
+        for i in range(len(xs)):
+            seg_waypoints.append([xs[i], y1, z1, r1, p1, yw1])
+
+        # Y-segment
+        if y1 != y2:
+            x_current = seg_waypoints[-1][0]
+            y_start   = seg_waypoints[-1][1]
+            ys = interp(y_start, y2, steps_per_axis)
+            # skip the first to avoid duplication
+            for i in range(1, len(ys)):
+                seg_waypoints.append([x_current, ys[i], z1, r1, p1, yw1])
+
+        # Z-segment
+        if z1 != z2:
+            x_current = seg_waypoints[-1][0]
+            y_current = seg_waypoints[-1][1]
+            z_start   = seg_waypoints[-1][2]
+            zs = interp(z_start, z2, steps_per_axis)
+            for i in range(1, len(zs)):
+                seg_waypoints.append([x_current, y_current, zs[i], r1, p1, yw1])
+
+        return seg_waypoints
+
+    # Distance in 2D
+    def dist_2d(x1, y1, x2, y2):
+        return np.hypot(x2 - x1, y2 - y1)
+
+    # Closest boundary coordinate
+    def closest_boundary_coord(x, y, half_n):
+        candidates = [
+            ( half_n,  y),   # x = +n/2
+            (-half_n,  y),   # x = -n/2
+            ( x,  half_n),   # y = +n/2
+            ( x, -half_n)    # y = -n/2
+        ]
+        dists = [dist_2d(x, y, cx, cy) for (cx, cy) in candidates]
+        idx = np.argmin(dists)
+        return candidates[idx]  # (boundary_x, boundary_y)
+
+    half_n = n / 2.0
+
+    # -- 1) Move from start (Sx,Sy) to closest boundary
+    current_pose = (Sx, Sy, Sz, 0.0, Spitch, Syaw)
+    sBx, sBy = closest_boundary_coord(Sx, Sy, half_n)
+    boundary_start_waypoints = move_one_axis_at_a_time(
+        current_pose, (sBx, sBy, Sz, 0.0, Spitch, Syaw), num_points
+    )
+    waypoints.extend(boundary_start_waypoints)
+    current_pose = tuple(waypoints[-1])
+
+    # -- 2) Move along the boundary to the boundary closest to E
+    eBx, eBy = closest_boundary_coord(Ex, Ey, half_n)
+
+    # Are these on x=±n/2 or y=±n/2?
+    s_on_x = (abs(sBx) == half_n)
+    e_on_x = (abs(eBx) == half_n)
+
+    # Are they the same exact boundary line? (e.g. x=+n/2 -> x=+n/2)
+    same_vertical   = s_on_x and e_on_x and (sBx == eBx)
+    same_horizontal = (not s_on_x) and (not e_on_x) and (sBy == eBy)
+
+    if same_vertical:
+        # Move along y
+        boundary_middle_waypoints = move_one_axis_at_a_time(
+            current_pose, (eBx, eBy, Sz, 0.0, Spitch, Syaw), num_points
+        )
+        waypoints.extend(boundary_middle_waypoints)
+        current_pose = tuple(waypoints[-1])
+
+    elif same_horizontal:
+        # Move along x
+        boundary_middle_waypoints = move_one_axis_at_a_time(
+            current_pose, (eBx, eBy, Sz, 0.0, Spitch, Syaw), num_points
+        )
+        waypoints.extend(boundary_middle_waypoints)
+        current_pose = tuple(waypoints[-1])
+
     else:
-        # Move to the nearest y boundary
-        if start_y > 0:
-            boundary_y = w / 2  # Move to positive boundary if closer
+        # Different / Opposite boundaries => route via one corner
+        corners = []
+        if s_on_x:
+            # sBx is ±n/2 => corners are (sBx, ±n/2)
+            corners.append((sBx,  half_n))
+            corners.append((sBx, -half_n))
         else:
-            boundary_y = -w / 2  # Move to negative boundary if closer
-        boundary_x = start_x  # Keep x constant
+            # sBy is ±n/2 => corners are (±n/2, sBy)
+            corners.append(( half_n, sBy))
+            corners.append((-half_n, sBy))
 
-    # Waypoints to move to the nearest boundary (no change in Z)
-    waypoints_phase2 = [
-        [
-            np.linspace(start_x, boundary_x, n2)[i],
-            np.linspace(start_y, boundary_y, n2)[i],
-            target_z,
-            0,   # Keep roll constant
-            start_pitch,  # Keep pitch constant
-            start_yaw     # Keep yaw constant
-        ]
-        for i in range(n2)
-    ]
-    
-    # Phase 3: Move along the boundary to the target boundary
-    waypoints_phase3 = []
-    
-    # If the boundary is along the x-axis, move to (ta, boundary_y)
-    if boundary_x == w / 2 or boundary_x == -w / 2:
-        # Move along the boundary (y-axis) to reach the target's y-coordinate
-        for i in range(n3):
-            waypoints_phase3.append([
-                boundary_x,  # Stay along the boundary x-coordinate
-                np.linspace(boundary_y, end_y, n3)[i],  # Move along the y-boundary
-                target_z,  # Maintain height `h`
-                0,  # Keep roll constant
-                start_pitch,  # Keep pitch constant
-                start_yaw     # Keep yaw constant
-            ])
-    # If the boundary is along the y-axis, move to (boundary_x, tb)
-    elif boundary_y == w / 2 or boundary_y == -w / 2:
-        # Move along the boundary (x-axis) to reach the target's x-coordinate
-        for i in range(n3):
-            waypoints_phase3.append([
-                np.linspace(boundary_x, end_x, n3)[i],  # Move along the x-boundary
-                boundary_y,  # Stay along the boundary y-coordinate
-                target_z,  # Maintain height `h`
-                0,  # Keep roll constant
-                start_pitch,  # Keep pitch constant
-                start_yaw     # Keep yaw constant
-            ])
-    
-    # Phase 4: Move to the target (ta, tb) while maintaining height `h`
-    waypoints_phase4 = [
-        [
-            end_x,  # Target x-coordinate
-            end_y,  # Target y-coordinate
-            target_z,  # Maintain height `h` at target boundary point
-            0,  # Keep roll constant
-            np.linspace(start_pitch, end_pitch, n3)[i],  # Change pitch gradually
-            np.linspace(start_yaw, end_yaw, n3)[i]  # Change yaw gradually
-        ]
-        for i in range(n3)
-    ]
+        best_corner = None
+        best_dist = float('inf')
+        for c in corners:
+            d1 = dist_2d(current_pose[0], current_pose[1], c[0], c[1])
+            d2 = dist_2d(c[0], c[1], eBx, eBy)
+            total = d1 + d2
+            if total < best_dist:
+                best_dist = total
+                best_corner = c
 
-    # Phase 5: Descend to target altitude
-    waypoints_phase5 = [
-        [
-            end_x,  # Keep x-coordinate constant
-            end_y,  # Keep y-coordinate constant
-            np.linspace(target_z, end_z, n3)[i],  # Descend to target z
-            0,  # Keep roll constant
-            np.linspace(start_pitch, end_pitch, n3)[i],  # Gradually adjust pitch
-            np.linspace(start_yaw, end_yaw, n3)[i]  # Gradually adjust yaw
-        ]
-        for i in range(n3)
-    ]
-    
-    # Combine all phases
-    waypoints = waypoints_phase1 + waypoints_phase2 + waypoints_phase3 + waypoints_phase4 + waypoints_phase5
+        # Move current_pose -> corner
+        corner_waypoints_1 = move_one_axis_at_a_time(
+            current_pose, (best_corner[0], best_corner[1], Sz, 0.0, Spitch, Syaw),
+            num_points
+        )
+        waypoints.extend(corner_waypoints_1)
+        current_pose = tuple(waypoints[-1])
 
+        # corner -> eB
+        corner_waypoints_2 = move_one_axis_at_a_time(
+            current_pose, (eBx, eBy, Sz, 0.0, Spitch, Syaw),
+            num_points
+        )
+        waypoints.extend(corner_waypoints_2)
+        current_pose = tuple(waypoints[-1])
+
+    # -- 3) Move from boundary near E to final (Ex, Ey) at same Z
+    boundary_end_waypoints = move_one_axis_at_a_time(
+        current_pose, (Ex, Ey, Sz, 0.0, Spitch, Syaw), num_points
+    )
+    waypoints.extend(boundary_end_waypoints)
+    current_pose = tuple(waypoints[-1])
+
+    # -- 4) Move from current Z to Ez (and adopt final pitch/yaw if desired)
+    final_waypoints_z = move_one_axis_at_a_time(
+        current_pose, (Ex, Ey, Ez, 0.0, Epitch, Eyaw_), num_points
+    )
+    waypoints.extend(final_waypoints_z)
+    current_pose = tuple(waypoints[-1])
+
+    # Convert to NumPy array
     return np.array(waypoints)
+
 
 def main():
     img_root = os.path.join(os.sep, "home", "dsr", "Documents", "demo", "mast3r", "dataset", "example")
@@ -1346,8 +1408,10 @@ def main():
         destination, occ = get_nbv(local_pts3d, masks, duster_poses, duster_imgs, nbv_model)
 
         # xyzrpy
-        waypoints = generate_waypoints(poses[-1], destination, n=10, h=1.5)
-        #waypoints = generate_waypoints_to_boundary(poses[-1], destination, w=ENV_SIZE, n=10, h=1.5)
+        #waypoints = generate_waypoints(poses[-1], destination, n=10, h=1.5)
+        print(poses[-1], destination, ENV_SIZE, 15)
+        waypoints = generate_waypoints_to_boundary(poses[-1], destination, ENV_SIZE, 5)
+        #waypoints = generate_waypoints_to_boundary(poses[-1], destination, w=ENV_SIZE, n=15, h=1.5)
         #waypoints = find_path_with_fallback_3d(occ, poses[-1], destination)
         print(waypoints)
         #write_waypoints_to_file(waypoints, os.path.join(img_root, f"waypoints_{i:02d}.txt"))
