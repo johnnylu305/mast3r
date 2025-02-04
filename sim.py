@@ -17,7 +17,7 @@ from scipy.spatial.transform import Rotation as R
 from colorama import Fore, Style
 # make sure the IsaacLab is the same to the trained model
 sys.path.append("/home/dsr/Documents/demo/isaac-sim-new/home/IsaacLab/source/extensions/omni.isaac.lab_tasks/omni/isaac/lab_tasks/direct/single_drone")
-from utils_mad3d import OccupancyGrid, get_seen_face
+from mad3d_utils import OccupancyGrid, get_seen_face
 sys.path.append("/home/dsr/Documents/demo/isaac-sim-new/home/IsaacLab/source/standalone/mad3d")
 from sb3_ppo_cus import PPO_Cus
 
