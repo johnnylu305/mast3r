@@ -90,13 +90,15 @@ def get_new_poses(data, num_lines, txt_file):
 
 
 def get_new_images(imgs, num_img, img_root):
-    img_paths = sorted(glob.glob(os.path.join(img_root, "*.jpg")))
+    #img_paths = sorted(glob.glob(os.path.join(img_root, "*.jpg")))
+    img_paths = sorted(glob.glob(os.path.join(img_root, "*.jpg")), key=lambda x: int(os.path.basename(x).split('_')[-1].split('.')[0]))
     print(len(img_paths), num_img) 
     # see new images
     if len(img_paths) >= num_img:
         time.sleep(5)
         # read new images
         for i in range(len(imgs), num_img, 1):
+            print(img_paths[i])
             img = Image.open(img_paths[i])
             img = np.array(img)
             imgs.append(img)
@@ -816,7 +818,8 @@ def get_nbv(local_pts3d, masks, duster_poses, duster_imgs, model):
     obv_poses[0, 3:5] = rpy[-1, 1:]
     obv_poses[0, 3:5] /= 3.15
     # height limit
-    obv_poses[0, 5] = np.floor(1.5/env_size*grid_size)/grid_size
+    obv_poses[0, 5] = np.floor(2.3/env_size*grid_size)/grid_size
+    #np.floor(1.5/env_size*grid_size)/grid_size
 
     # grid
     # occ
@@ -1336,8 +1339,15 @@ def generate_waypoints_to_boundary(S, E, n, num_points=10):
     waypoints.extend(final_waypoints_z)
     current_pose = tuple(waypoints[-1])
 
+    waypoints = np.array(waypoints)
+
+    # Ensure the last waypoint has the correct pitch and yaw
+    waypoints[:, 3] = 0.0      # Roll fixed to 0
+    waypoints[:, 4] = Epitch   # Match the target pitch
+    waypoints[:, 5] = Eyaw_    # Match the target yaw
+
     # Convert to NumPy array
-    return np.array(waypoints)
+    return waypoints
 
 
 def main():
@@ -1373,13 +1383,18 @@ def main():
 
     # demo opera house
     init_points = [[-1.0,  -1.34, 0.5, 0.0, 0.1, 1.0],
-                   [-1.2,  -1.24, 0.55, 0.0, 0.2, 0.7],
+                   [-1.2,  -1.24, 0.6, 0.0, 0.2, 0.7],
                    [-1.1,  -1.34, 1.2, 0.0, 0.7, 0.7]]
 
     # demo shifted opera house
     #init_points = [[-1.0,  -1.3, 1.4, 0.0, 0.8, 0.7],
     #               [-1.2,  -1.2, 0.6, 0.0, 0.4, 0.7],
     #               [-1.1,  -1.1, 1.2, 0.0, 0.75, 0.7]]
+
+    # Taipei
+    init_points = [[-1.0,  -1.34, 2.1, 0.0, 0.1, 1.0],
+                   [-1.2,  -1.24, 2.0, 0.0, 0.2, 0.7],
+                   [-1.1,  -1.34, 1.8, 0.0, 0.7, 0.7]]
 
     # three initial viewpoints
     write_waypoints_to_file([init_points[0]], os.path.join(img_root, f"waypoints_{0:02d}.txt"))
@@ -1408,9 +1423,9 @@ def main():
         destination, occ = get_nbv(local_pts3d, masks, duster_poses, duster_imgs, nbv_model)
 
         # xyzrpy
-        #waypoints = generate_waypoints(poses[-1], destination, n=10, h=1.5)
-        print(poses[-1], destination, ENV_SIZE, 15)
-        waypoints = generate_waypoints_to_boundary(poses[-1], destination, ENV_SIZE, 5)
+        waypoints = generate_waypoints(poses[-1], destination, n=10, h=2.2) #1.5)
+        #print(poses[-1], destination, ENV_SIZE, 15)
+        #waypoints = generate_waypoints_to_boundary(poses[-1], destination, ENV_SIZE, 5)
         #waypoints = generate_waypoints_to_boundary(poses[-1], destination, w=ENV_SIZE, n=15, h=1.5)
         #waypoints = find_path_with_fallback_3d(occ, poses[-1], destination)
         print(waypoints)
