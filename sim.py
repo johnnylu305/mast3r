@@ -1,6 +1,6 @@
 import sys
 # make sure the IsaacLab is the same to the trained model
-sys.path.append("/home/dsr/Documents/mad3d/demo/isaac-sim-4.2.0/home/IsaacLab")
+sys.path.append("/home/dsr/Documents/mad3d/demo/isaac-sim-4.5.0/home/Hestia-NBV")
 import source
 import os
 import numpy as np
@@ -16,9 +16,9 @@ from PIL import Image
 from scipy.spatial.transform import Rotation as R
 from colorama import Fore, Style
 # make sure the IsaacLab is the same to the trained model
-sys.path.append("/home/dsr/Documents/mad3d/demo/isaac-sim-4.2.0/home/IsaacLab/source/extensions/omni.isaac.lab_tasks/omni/isaac/lab_tasks/direct/single_drone")
-from utils_mad3d import OccupancyGrid, get_seen_face
-sys.path.append("/home/dsr/Documents/mad3d/demo/isaac-sim-4.2.0/home/IsaacLab/source/standalone/mad3d")
+sys.path.append("/home/dsr/Documents/mad3d/demo/isaac-sim-4.5.0/home/Hestia-NBV/source/isaaclab_tasks/isaaclab_tasks/direct/single_drone")
+from mad3d_utils import OccupancyGrid, get_seen_face
+sys.path.append("/home/dsr/Documents/mad3d/demo/isaac-sim-4.5.0/home/Hestia-NBV/scripts/mad3d")
 from sb3_ppo_cus import PPO_Cus
 
 
@@ -1370,7 +1370,7 @@ def main():
     duster_model = AsymmetricMASt3R.from_pretrained(model_name).cuda()
 
     # initial rl model
-    model_name = os.path.join(os.sep, "home", "dsr", "Documents", "mad3d", "demo", "model", "model", "camera_image_envsize20_30000rand_obja_lrsch_dilatednearest", "model_4608000_steps.zip")
+    model_name = os.path.join(os.sep, "home", "dsr", "Documents", "mad3d", "demo", "model", "model2.1", "model_4864000_steps.zip")
     #model_name = os.path.join(os.sep, "home", "dsr", "Documents", "demo", "model", "camera_image_envsize20_30000rand_obja_lrsch_dilatednearest", "model_4864000_steps.zip")
     nbv_model = PPO_Cus.load(model_name)
 
@@ -1402,7 +1402,7 @@ def main():
     write_waypoints_to_file([init_points[1]], os.path.join(img_root, f"waypoints_{1:02d}.txt"))
     write_waypoints_to_file([init_points[2]], os.path.join(img_root, f"waypoints_{2:02d}.txt"))
 
-    for i in range(3, 20, 1):
+    for i in range(3, 10, 1):
         # initial images (at least 2)
         while not get_new_images(imgs, i, img_root):
             print(f"{Fore.YELLOW}[{current_time()}] Waiting for new images...{Style.RESET_ALL}")
