@@ -1,6 +1,6 @@
 import sys
 # make sure the IsaacLab is the same to the trained model
-sys.path.append("/home/dsr/Documents/demo/IsaacLab")
+sys.path.append("/home/dsr/Documents/mad3d/demo/isaac-sim-4.2.0/home/IsaacLab")
 import source
 import os
 import numpy as np
@@ -16,9 +16,9 @@ from PIL import Image
 from scipy.spatial.transform import Rotation as R
 from colorama import Fore, Style
 # make sure the IsaacLab is the same to the trained model
-sys.path.append("/home/dsr/Documents/demo/IsaacLab/source/extensions/omni.isaac.lab_tasks/omni/isaac/lab_tasks/direct/single_drone")
+sys.path.append("/home/dsr/Documents/mad3d/demo/isaac-sim-4.2.0/home/IsaacLab/source/extensions/omni.isaac.lab_tasks/omni/isaac/lab_tasks/direct/single_drone")
 from utils_mad3d import OccupancyGrid, get_seen_face
-sys.path.append("/home/dsr/Documents/demo/IsaacLab/source/standalone/mad3d")
+sys.path.append("/home/dsr/Documents/mad3d/demo/isaac-sim-4.2.0/home/IsaacLab/source/standalone/mad3d")
 from sb3_ppo_cus import PPO_Cus
 
 
@@ -1351,7 +1351,8 @@ def generate_waypoints_to_boundary(S, E, n, num_points=10):
 
 
 def main():
-    img_root = os.path.join(os.sep, "home", "dsr", "Documents", "demo", "mast3r", "dataset", "example")
+    #img_root = os.path.join(os.sep, "home", "dsr", "Documents", "demo", "mast3r", "dataset", "example")
+    img_root = os.path.join(".", "dataset", "example")
     #img_root = os.path.join(os.sep, "home", "dsr", "Documents", "demo", "mast3r", "dataset", "opera_house_marker_40d")
     
     # text path
@@ -1369,7 +1370,7 @@ def main():
     duster_model = AsymmetricMASt3R.from_pretrained(model_name).cuda()
 
     # initial rl model
-    model_name = os.path.join(os.sep, "home", "dsr", "Documents", "demo", "model", "camera_image_envsize20_30000rand_obja_lrsch_dilatednearest", "model_4608000_steps.zip")
+    model_name = os.path.join(os.sep, "home", "dsr", "Documents", "mad3d", "demo", "model", "model", "camera_image_envsize20_30000rand_obja_lrsch_dilatednearest", "model_4608000_steps.zip")
     #model_name = os.path.join(os.sep, "home", "dsr", "Documents", "demo", "model", "camera_image_envsize20_30000rand_obja_lrsch_dilatednearest", "model_4864000_steps.zip")
     nbv_model = PPO_Cus.load(model_name)
 
