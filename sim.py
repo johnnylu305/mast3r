@@ -32,8 +32,9 @@ from dust3r.demo import get_3D_model_from_scene
 from dust3r.image_pairs import make_pairs
 from dust3r.viz import *
 
-
-ENV_SIZE = 2.7 #2.6 #3
+VIS = True
+# Environment size in meter
+ENV_SIZE = 2.7
 GRID_SIZE = 20
 
 
@@ -76,7 +77,6 @@ def get_new_poses(data, num_lines, txt_file):
             # ros coordinate
             # time1 time2 x y z roll pitch yaw camera_pitch 
             parts = line.split()
-    
             if len(parts) == 9:
                 xyz = [float(parts[2]), float(parts[3]), float(parts[4])]
                 rpy = [float(parts[5]), float(parts[6]), float(parts[7])] 
@@ -90,15 +90,14 @@ def get_new_poses(data, num_lines, txt_file):
 
 
 def get_new_images(imgs, num_img, img_root):
-    #img_paths = sorted(glob.glob(os.path.join(img_root, "*.jpg")))
     img_paths = sorted(glob.glob(os.path.join(img_root, "*.jpg")), key=lambda x: int(os.path.basename(x).split('_')[-1].split('.')[0]))
-    print(len(img_paths), num_img) 
+    print(f"Received: {len(img_paths)}, Target: {num_img}") 
     # see new images
     if len(img_paths) >= num_img:
         time.sleep(5)
         # read new images
         for i in range(len(imgs), num_img, 1):
-            print(img_paths[i])
+            #print(img_paths[i])
             img = Image.open(img_paths[i])
             img = np.array(img)
             imgs.append(img)
@@ -106,7 +105,7 @@ def get_new_images(imgs, num_img, img_root):
 
     return False
 
-
+# Mast3r preprocess
 def load_images(imgs_org, size, square_ok=False, verbose=True):
 
     ImgNorm = tvf.Compose([tvf.ToTensor(), tvf.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
@@ -168,58 +167,6 @@ def run_duster(imgs, model=None):
     vw_poses = scene.get_im_poses()
 
     return scene, depthmaps, vw_poses
-
-
-def run_duster_with_known(imgs, E, I, model=None):
-    device = 'cuda'
-    schedule = 'cosine'
-    lr = 0.01
-    niter = 300
-
-    if model is None:
-        model_name = "naver/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric"
-        model = AsymmetricMASt3R.from_pretrained(model_name).to(device)
-    images = load_images(imgs, size=512)
-    pairs = make_pairs(images, scene_graph='complete', prefilter=None, symmetrize=True)
-    output = inference(pairs, model, device, batch_size=1, verbose=False)
-
-    # at this stage, you have the raw dust3r predictions
-    view1, pred1 = output['view1'], output['pred1']
-    view2, pred2 = output['view2'], output['pred2']
-
-    # known initial pose
-    n = len(imgs)
-    T = torch.tensor([[-1, 0, 0], 
-                      [0, -1, 0], 
-                      [0,  0, 1]], dtype=torch.float32)  # Change of basis matrix
-    E_rdf_rot = np.matmul(T, E[:, :3, :3])
-    E_rdf_trans = np.matmul(T, E[:, :3, 3:4])
-    E_rdf = np.concatenate((E_rdf_rot, E_rdf_trans), axis=-1)
-    E_rdf = np.concatenate((E_rdf, E[:, 3:4, :]), axis=1)
-    masks = [True for i in range(n)] 
-    I *= 384./1080.
-    poses = []
-    intrinsic = []
-    for i, m in enumerate(masks):
-        if m:
-            poses.append(E_rdf[i])
-            intrinsic.append(I)
-    scene = global_aligner(output, device=device, mode=GlobalAlignerMode.PointCloudOptimizer)
-    #scene.preset_pose(poses, masks)
-    #scene.preset_intrinsics(intrinsic, masks)
-    #scene.preset_focal([I.diagonal()[:2].mean()])
-    #scene.preset_principal_point([I[:2, 2]])
-    loss = scene.compute_global_alignment(init='mst', niter=niter, schedule=schedule, lr=lr)   
-    show_raw_pointcloud(scene.get_pts3d(), scene.imgs)
-    
-    # get local raw depth map
-    depthmaps = scene.get_depthmaps(raw=True)
-    
-    # get virtual world poses
-    vw_poses = scene.get_im_poses()
-
-    return scene, depthmaps, vw_poses
-
 
 def set_axes_equal(ax):
     """
@@ -331,73 +278,6 @@ def umeyama(X, Y):
     return c, R, t
 
 
-def rdf_to_ruf(pose_matrices):
-    converted_poses = []
-    
-    for pose in pose_matrices:
-        # Extract rotation matrix (R) and translation vector (T)
-        rotation_matrix = pose[:3, :3]
-        translation_vector = pose[:3, 3]
-        
-        # Apply coordinate transformation: 
-        # Convert from right-down-forward to right-up-forward
-        # This involves flipping the Y axis.
-        flip_y = np.array([[1, 0, 0],
-                           [0, -1, 0],
-                           [0, 0, 1]])
-
-        # Update rotation matrix and translation vector
-        rotation_matrix = flip_y @ rotation_matrix
-        translation_vector = flip_y @ translation_vector
-
-        # Convert rotation matrix to a rotation vector (Rodrigues' rotation vector)
-        r = R.from_matrix(rotation_matrix)
-        rotation_vector = r.as_rotvec()  # This gives the axis-angle rotation vector
-
-        # Normalize the rotation vector to get a unit vector
-        rotation_unit_vector = rotation_vector / np.linalg.norm(rotation_vector)
-
-        # Extract translation (x, y, z)
-        x, y, z = translation_vector
-
-        # Append the result as [x, y, z, rotation_unit_vector]
-        converted_poses.append([x, y, z]+rotation_unit_vector.tolist())
-    
-    return converted_poses
-
-
-def to_rotation_unit_vector(roll, yaw, pitch):
-    # Step 1: Convert roll, yaw, pitch from degrees to radians
-    roll_rad = np.radians(roll)
-    yaw_rad = np.radians(yaw)
-    pitch_rad = np.radians(pitch)
-    
-    # Step 2: Create a rotation matrix from the Euler angles with 'xyz' convention (roll, yaw, pitch)
-    r = R.from_euler('xyz', [roll_rad, yaw_rad, pitch_rad])
-    
-    # Step 3: Convert the rotation matrix to a rotation vector
-    rotation_vector = r.as_rotvec()
-    
-    # Step 4: Normalize the rotation vector to get the unit vector
-    rotation_unit_vector = rotation_vector / np.linalg.norm(rotation_vector)
-    
-    return rotation_unit_vector
-
-
-def rdf_to_flu(pose):
-    T_conv = np.array([
-        [0,   0,  1,  0],
-        [-1,  0,  0,  0],
-        [0,  -1,  0,  0],
-        [0,   0,  0,  1]   
-    ])
-    
-    # Apply the conversion matrix to the input transformation matrix
-    new_pose = T_conv @ pose
-    
-    return new_pose
-
-
 def rpy_to_rotation_matrix(poses):
     transformation_matrices = []
     
@@ -417,33 +297,6 @@ def rpy_to_rotation_matrix(poses):
         transformation_matrices.append(transformation_matrix)
     
     return transformation_matrices
-
-
-def visualize_3d_points(pts3d):
-    # Create a new figure for 3D plotting
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    
-    # Extract X, Y, Z coordinates from the list of 3D points
-    pts3d = pts3d.reshape(-1, 3)[::50]
-    
-    xs = [p[0] for p in pts3d]
-    ys = [p[1] for p in pts3d]
-    zs = [p[2] for p in pts3d]
-    
-    # Plot the points using scatter
-    ax.scatter(xs, ys, zs, c='r', marker='o')
-    
-    # Set axis labels
-    ax.set_xlabel('X Label')
-    ax.set_ylabel('Y Label')
-    ax.set_zlabel('Z Label')
-    
-    # Set title
-    ax.set_title("3D Points Visualization")
-    
-    # Show the plot
-    plt.show()
 
 
 def visualize_valid_3d_points(pts3d, mask):
@@ -485,49 +338,6 @@ def visualize_valid_3d_points(pts3d, mask):
 
     # Show the plot
     plt.show()
-
-
-def transform_to_depth_map(world_pts, pose):
-    n, h, w, _ = world_pts.shape  # Get the dimensions of the input world points
-    
-    depth_maps = np.empty((n, h, w))  # Placeholder for storing the depth maps for each batch
-
-    # Loop over each frame in the batch
-    for i in range(n):
-        # Extract the rotation and translation from the pose (C2W) for frame i
-        R = pose[i, :3, :3]  # Rotation matrix (3x3)
-        T = pose[i, :3, 3]   # Translation vector (3,)
-
-        # Invert the C2W pose matrix to get W2C
-        R_inv = R.T            # Inverted (transposed) rotation matrix
-        T_inv = -R_inv @ T     # Inverted translation vector
-
-        # Add homogeneous coordinates to world points if needed
-        if world_pts.shape[-1] == 3:
-            world_pts_homogeneous = np.concatenate([world_pts[i], np.ones((h, w, 1))], axis=-1)  # Add homogeneous coordinate
-        else:
-            world_pts_homogeneous = world_pts[i]  # Already has homogeneous coordinates
-
-        world_pts_homogeneous = world_pts_homogeneous.reshape(-1, 4)  # Flatten to (h*w, 4)
-
-        # Construct the W2C transformation matrix for frame i
-        pose_inv = np.eye(4)
-        pose_inv[:3, :3] = R_inv  # Set the inverse rotation
-        pose_inv[:3, 3] = T_inv   # Set the inverse translation
-
-        # Apply the W2C transformation to the world points
-        local_pts_homogeneous = (pose_inv @ world_pts_homogeneous.T).T  # Transform to local coordinates
-        local_pts = local_pts_homogeneous[:, :3]  # Extract (x, y, z)
-
-        local_pts = local_pts.reshape(h, w, 3)  # Reshape back to (h, w, 3)
-
-        # Convert to depth map (z-values in the local camera frame)
-        depth_map = local_pts[..., 2]  # Extract the z-values as the depth map
-
-        # Store the depth map for the current frame
-        depth_maps[i] = depth_map
-
-    return depth_maps
 
 
 def transform_to_pts_map(world_pts, pose):
@@ -610,7 +420,50 @@ def apply_cRT_to_E(E, c, R, T):
     return E_prime
 
 
-def get_rescaled_depths(imgs, E, model, I=None):
+def transform_to_depth_map(world_pts, pose):
+    n, h, w, _ = world_pts.shape  # Get the dimensions of the input world points
+    
+    depth_maps = np.empty((n, h, w))  # Placeholder for storing the depth maps for each batch
+
+    # Loop over each frame in the batch
+    for i in range(n):
+        # Extract the rotation and translation from the pose (C2W) for frame i
+        R = pose[i, :3, :3]  # Rotation matrix (3x3)
+        T = pose[i, :3, 3]   # Translation vector (3,)
+
+        # Invert the C2W pose matrix to get W2C
+        R_inv = R.T            # Inverted (transposed) rotation matrix
+        T_inv = -R_inv @ T     # Inverted translation vector
+
+        # Add homogeneous coordinates to world points if needed
+        if world_pts.shape[-1] == 3:
+            world_pts_homogeneous = np.concatenate([world_pts[i], np.ones((h, w, 1))], axis=-1)  # Add homogeneous coordinate
+        else:
+            world_pts_homogeneous = world_pts[i]  # Already has homogeneous coordinates
+
+        world_pts_homogeneous = world_pts_homogeneous.reshape(-1, 4)  # Flatten to (h*w, 4)
+
+        # Construct the W2C transformation matrix for frame i
+        pose_inv = np.eye(4)
+        pose_inv[:3, :3] = R_inv  # Set the inverse rotation
+        pose_inv[:3, 3] = T_inv   # Set the inverse translation
+
+        # Apply the W2C transformation to the world points
+        local_pts_homogeneous = (pose_inv @ world_pts_homogeneous.T).T  # Transform to local coordinates
+        local_pts = local_pts_homogeneous[:, :3]  # Extract (x, y, z)
+
+        local_pts = local_pts.reshape(h, w, 3)  # Reshape back to (h, w, 3)
+
+        # Convert to depth map (z-values in the local camera frame)
+        depth_map = local_pts[..., 2]  # Extract the z-values as the depth map
+
+        # Store the depth map for the current frame
+        depth_maps[i] = depth_map
+
+    return depth_maps
+
+
+def get_rescaled_depths(imgs, E, model):
     """
     Input
     E: (#imgs, 4, 4) in forward, left, up
@@ -622,14 +475,10 @@ def get_rescaled_depths(imgs, E, model, I=None):
     scene.imgs: (#imgs, 384, 512, 3)
     """  
 
-    #print(imgs.shape)
-    #print(E.shape) 
-    
     assert len(imgs)==len(E) 
 
     # run duster
     scene, duster_depthmaps, duster_vw_poses = run_duster(imgs, model)
-    #scene, duster_depthmaps, duster_vw_poses = run_duster_with_known(imgs, E, I)
     # (#imgs, 384*512)
     duster_depthmaps = duster_depthmaps.detach()
     # (#imgs, 4, 4) in right, down, forward
@@ -649,7 +498,8 @@ def get_rescaled_depths(imgs, E, model, I=None):
     pts3d = torch.stack(pts3d).detach().cpu().numpy()
     # transform point map from duster world frame to real world frame
     pts3d = apply_cRT_pts(pts3d, c, R, T)
-    visualize_valid_3d_points(pts3d[0], scene.get_masks()[0].detach().cpu().numpy())
+    if VIS:
+        visualize_valid_3d_points(pts3d[0], scene.get_masks()[0].detach().cpu().numpy())
 
     # transform extrinsic from duster to real world frame
     duster_rw_poses = apply_cRT_to_E(duster_vw_poses, c, R, T)
@@ -714,35 +564,6 @@ def visualize_world_point_cloud(local_pts3d, masks, duster_poses, duster_imgs):
     cloud.show()
 
 
-def visualize_occ_grid(occ_grid, voxel_size):
-    """
-    Visualizes the occupancy grid using Trimesh.
-    
-    Parameters:
-    - occ_grid: A 3D numpy array where 1 indicates occupied cells and 0 indicates empty cells.
-    """
-    # Create an empty list to store voxel meshes
-    voxel_meshes = []
-
-    # Loop through the occupancy grid and create a cube for each occupied cell
-    for i in range(occ_grid.shape[0]):
-        for j in range(occ_grid.shape[1]):
-            for k in range(occ_grid.shape[2]):
-                if occ_grid[i, j, k] == 1:  # If the cell is occupied
-                    # Create a cube (voxel) at position (i, j, k)
-                    voxel = trimesh.creation.box(extents=(voxel_size, voxel_size, voxel_size))
-                    # Translate the voxel to its correct position in space
-                    voxel.apply_translation([i * voxel_size, j * voxel_size, k * voxel_size])
-                    # Append to the list of voxel meshes
-                    voxel_meshes.append(voxel)
-
-    # Combine all the voxel meshes into a single mesh
-    scene = trimesh.util.concatenate(voxel_meshes)
-
-    # Visualize the scene
-    scene.show()
-
-
 def get_occ_and_face(grid, obv_face, points_3d_cam, poses, masks, env_size, grid_size, device):
     # local 3d point map: (batch, h*w, 3)
     points_3d_cam = points_3d_cam[masks].reshape(1, -1, 3)   
@@ -751,7 +572,7 @@ def get_occ_and_face(grid, obv_face, points_3d_cam, poses, masks, env_size, grid
     points_3d_cam = torch.cat((points_3d_cam, ones), dim=-1)  # (1, h*w, 4)
     points_3d_world = torch.matmul(points_3d_cam, poses.T)  # (1, h*w, 4)
     points_3d_world = points_3d_world[..., :3] / points_3d_world[..., 3:4]
-    # add a small offset to z to prevent noise removing floor
+    # trick: add a small offset to z to prevent noise removing floor
     points_3d_world[0, :, 2] += env_size/(grid_size)*0.9
     
 
@@ -781,7 +602,6 @@ def get_occ_and_face(grid, obv_face, points_3d_cam, poses, masks, env_size, grid
 
     return probability_grid, obv_face
     
-
 
 def get_nbv(local_pts3d, masks, duster_poses, duster_imgs, model):
     # get observation
@@ -817,9 +637,11 @@ def get_nbv(local_pts3d, masks, duster_poses, duster_imgs, model):
     rpy = r.as_euler('xyz', degrees=False)
     obv_poses[0, 3:5] = rpy[-1, 1:]
     obv_poses[0, 3:5] /= 3.15
+
+    # TODO: adjust the height limit in meter based on the real-world env
     # height limit
-    obv_poses[0, 5] = np.floor(2.3/env_size*grid_size)/grid_size
-    #np.floor(1.5/env_size*grid_size)/grid_size
+    obv_poses[0, 5] = np.floor(1.5/env_size*grid_size)/grid_size
+    #np.floor(2.3/env_size*grid_size)/grid_size
 
     # grid
     # occ
@@ -843,7 +665,6 @@ def get_nbv(local_pts3d, masks, duster_poses, duster_imgs, model):
                                      torch.tensor(masks[i]).to(device), env_size, grid_size, device)
         # visualize
         hard_occ = torch.where(occ[0, :, :, :] >= 0.6, 1, 0)
-        #visualize_occ_grid(hard_occ, env_size/grid_size)
 
     obv_occ[0, :, :, :, 0] = occ.cpu().numpy()
     obv_occ[0, :, :, :, 4:] = face.cpu().numpy()
@@ -1054,306 +875,14 @@ def visualize_waypoints(waypoints, start, end):
     
     plt.show()
 
+
 def current_time():
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
-def is_valid_3d(grid, x, y, z):
-    """Check if a point is within the 3D grid and not an obstacle."""
-    x_max, y_max, z_max = grid.shape
-    return 0 <= x < x_max and 0 <= y < y_max and 0 <= z < z_max and grid[x, y, z] == 0
-
-def heuristic_3d(a, b):
-    """Heuristic function for A* (Euclidean distance)."""
-    return np.linalg.norm(np.array(a) - np.array(b))
-
-def get_neighbors_3d(point):
-    """Generate all 26 neighbors for a given 3D point."""
-    x, y, z = point
-    neighbors = []
-    for dx in [-1, 0, 1]:
-        for dy in [-1, 0, 1]:
-            for dz in [-1, 0, 1]:
-                if dx == 0 and dy == 0 and dz == 0:
-                    continue  # Skip the current point
-                neighbors.append((x + dx, y + dy, z + dz))
-    return neighbors
-
-def a_star_3d(grid, start, destination):
-    """A* pathfinding algorithm for a 3D grid with 26 neighbors."""
-    open_set = []
-    heappush(open_set, (0, start))
-    came_from = {}
-    g_score = {start: 0}
-    f_score = {start: heuristic_3d(start, destination)}
-    visited = set()
-    last_free_point = start  # Track the last free point visited
-
-    while open_set:
-        _, current = heappop(open_set)
-
-        # If destination is reached
-        if current == destination:
-            path = []
-            while current in came_from:
-                path.append(current)
-                current = came_from[current]
-            path.append(start)
-            return path[::-1], last_free_point
-
-        visited.add(current)
-        last_free_point = current  # Update the last free point
-
-        # Explore all 26 neighbors
-        for neighbor in get_neighbors_3d(current):
-            if not is_valid_3d(grid, neighbor[0], neighbor[1], neighbor[2]) or neighbor in visited:
-                continue
-
-            tentative_g_score = g_score[current] + 1
-            if neighbor not in g_score or tentative_g_score < g_score[neighbor]:
-                came_from[neighbor] = current
-                g_score[neighbor] = tentative_g_score
-                f_score[neighbor] = tentative_g_score + heuristic_3d(neighbor, destination)
-                heappush(open_set, (f_score[neighbor], neighbor))
-
-    # If no path found
-    return None, last_free_point
-
-def find_path_with_fallback_3d(grid, start_w, destination_w):
-    """Ensure a path to the destination exists, collision-free or not."""
-
-    env_size = ENV_SIZE
-    grid_size = GRID_SIZE
-
-    # grid to numpy
-    h = int(np.floor(1.5/env_size*grid_size))
-    grid = grid.cpu().numpy()
-    grid[:, :, h+1:] = 1
-    lh = int(np.floor(0.5/env_size*grid_size))
-    grid[:, :, :h] = 1
-    # to grid coord
-    start_w[3] = 0
-    start_w[4] = np.radians(start_w[4])
-    start_w[5] = np.radians(start_w[5])
-    start = np.array(start_w[:3])
-    destination = np.array(destination_w[0][:3])
-    
-    offset = np.array([env_size/2, env_size/2, 0])
-    start = tuple(np.floor((start+offset)*grid_size/env_size).astype(int).tolist())
-    destination = tuple(np.floor((destination+offset)*grid_size/env_size).astype(int).tolist())
-
-    path, last_free_point = a_star_3d(grid, start, destination)
-
-    dest = destination_w[0].tolist()[:3]+[0]+destination_w[0].tolist()[3:]
-
-    if path:
-        print("Collision free path")
-        path = [np.array(list(p))*env_size/grid_size-offset for p in path]
-        path = [list(p)+start_w[3:]  for p in path]
-        path = path + [dest]
-        return np.array(path)
-    else:
-        # If no collision-free path exists, find a path to the last free point
-        approach_path, _ = a_star_3d(grid, start, last_free_point)
-        if not approach_path:
-            approach_path = [start]  # If no path to the last free point, start is the fallback
-        # Link the last free point to the destination directly
-        print("Potential non-free path")
-        path = approach_path
-        path = [np.array(list(p))*env_size/grid_size-offset for p in path]
-        path = [list(p)+start_w[3:]  for p in path]
-        path = path + [dest]
-        return np.array(path)
-
-
-def generate_waypoints_to_boundary(S, E, n, num_points=10):
-    """
-    Generate waypoints from pose S to pose E by hugging the square boundary
-    at x = ±n/2 or y = ±n/2, changing only one axis at a time.
-
-    S = (Sx, Sy, Sz, S_roll, S_pitch, S_yaw)
-    E = [[Ex, Ey, Ez, E_pitch, E_yaw]] or a similar structure (5 items).
-    n = side length of the square boundary (±n/2).
-    num_points = how many sub-steps to use for each 1D (axis) motion.
-
-    Returns a NumPy array of shape (N, 6), each row:
-      [x, y, z, roll, pitch, yaw].
-    """
-
-    # ---------------------------------------------------------------------
-    # Unpack start and end
-    # ---------------------------------------------------------------------
-    Sx, Sy, Sz, Sroll, Spitch, Syaw = S
-    Ex, Ey, Ez, Epitch, Eyaw_ = E[0]  # if E is a nested list
-
-    # Force roll to zero along the path (if that's your rule):
-    Sroll = 0.0
-    Eroll = 0.0
-
-    # This list will accumulate the final path
-    waypoints = []
-
-    # ---------------------------------------------------------------------
-    # Helper: "move one axis at a time" with exactly num_points per axis
-    # ---------------------------------------------------------------------
-    def move_one_axis_at_a_time(start_pose, end_pose, steps_per_axis):
-        (x1, y1, z1, r1, p1, yw1) = start_pose
-        (x2, y2, z2, r2, p2, yw2) = end_pose
-
-        seg_waypoints = []
-
-        def interp(a_start, a_end, N):
-            return np.linspace(a_start, a_end, N)
-
-        # X-segment
-        if x1 != x2:
-            xs = interp(x1, x2, steps_per_axis)
-        else:
-            xs = np.array([x1]*steps_per_axis)
-
-        for i in range(len(xs)):
-            seg_waypoints.append([xs[i], y1, z1, r1, p1, yw1])
-
-        # Y-segment
-        if y1 != y2:
-            x_current = seg_waypoints[-1][0]
-            y_start   = seg_waypoints[-1][1]
-            ys = interp(y_start, y2, steps_per_axis)
-            # skip the first to avoid duplication
-            for i in range(1, len(ys)):
-                seg_waypoints.append([x_current, ys[i], z1, r1, p1, yw1])
-
-        # Z-segment
-        if z1 != z2:
-            x_current = seg_waypoints[-1][0]
-            y_current = seg_waypoints[-1][1]
-            z_start   = seg_waypoints[-1][2]
-            zs = interp(z_start, z2, steps_per_axis)
-            for i in range(1, len(zs)):
-                seg_waypoints.append([x_current, y_current, zs[i], r1, p1, yw1])
-
-        return seg_waypoints
-
-    # Distance in 2D
-    def dist_2d(x1, y1, x2, y2):
-        return np.hypot(x2 - x1, y2 - y1)
-
-    # Closest boundary coordinate
-    def closest_boundary_coord(x, y, half_n):
-        candidates = [
-            ( half_n,  y),   # x = +n/2
-            (-half_n,  y),   # x = -n/2
-            ( x,  half_n),   # y = +n/2
-            ( x, -half_n)    # y = -n/2
-        ]
-        dists = [dist_2d(x, y, cx, cy) for (cx, cy) in candidates]
-        idx = np.argmin(dists)
-        return candidates[idx]  # (boundary_x, boundary_y)
-
-    half_n = n / 2.0
-
-    # -- 1) Move from start (Sx,Sy) to closest boundary
-    current_pose = (Sx, Sy, Sz, 0.0, Spitch, Syaw)
-    sBx, sBy = closest_boundary_coord(Sx, Sy, half_n)
-    boundary_start_waypoints = move_one_axis_at_a_time(
-        current_pose, (sBx, sBy, Sz, 0.0, Spitch, Syaw), num_points
-    )
-    waypoints.extend(boundary_start_waypoints)
-    current_pose = tuple(waypoints[-1])
-
-    # -- 2) Move along the boundary to the boundary closest to E
-    eBx, eBy = closest_boundary_coord(Ex, Ey, half_n)
-
-    # Are these on x=±n/2 or y=±n/2?
-    s_on_x = (abs(sBx) == half_n)
-    e_on_x = (abs(eBx) == half_n)
-
-    # Are they the same exact boundary line? (e.g. x=+n/2 -> x=+n/2)
-    same_vertical   = s_on_x and e_on_x and (sBx == eBx)
-    same_horizontal = (not s_on_x) and (not e_on_x) and (sBy == eBy)
-
-    if same_vertical:
-        # Move along y
-        boundary_middle_waypoints = move_one_axis_at_a_time(
-            current_pose, (eBx, eBy, Sz, 0.0, Spitch, Syaw), num_points
-        )
-        waypoints.extend(boundary_middle_waypoints)
-        current_pose = tuple(waypoints[-1])
-
-    elif same_horizontal:
-        # Move along x
-        boundary_middle_waypoints = move_one_axis_at_a_time(
-            current_pose, (eBx, eBy, Sz, 0.0, Spitch, Syaw), num_points
-        )
-        waypoints.extend(boundary_middle_waypoints)
-        current_pose = tuple(waypoints[-1])
-
-    else:
-        # Different / Opposite boundaries => route via one corner
-        corners = []
-        if s_on_x:
-            # sBx is ±n/2 => corners are (sBx, ±n/2)
-            corners.append((sBx,  half_n))
-            corners.append((sBx, -half_n))
-        else:
-            # sBy is ±n/2 => corners are (±n/2, sBy)
-            corners.append(( half_n, sBy))
-            corners.append((-half_n, sBy))
-
-        best_corner = None
-        best_dist = float('inf')
-        for c in corners:
-            d1 = dist_2d(current_pose[0], current_pose[1], c[0], c[1])
-            d2 = dist_2d(c[0], c[1], eBx, eBy)
-            total = d1 + d2
-            if total < best_dist:
-                best_dist = total
-                best_corner = c
-
-        # Move current_pose -> corner
-        corner_waypoints_1 = move_one_axis_at_a_time(
-            current_pose, (best_corner[0], best_corner[1], Sz, 0.0, Spitch, Syaw),
-            num_points
-        )
-        waypoints.extend(corner_waypoints_1)
-        current_pose = tuple(waypoints[-1])
-
-        # corner -> eB
-        corner_waypoints_2 = move_one_axis_at_a_time(
-            current_pose, (eBx, eBy, Sz, 0.0, Spitch, Syaw),
-            num_points
-        )
-        waypoints.extend(corner_waypoints_2)
-        current_pose = tuple(waypoints[-1])
-
-    # -- 3) Move from boundary near E to final (Ex, Ey) at same Z
-    boundary_end_waypoints = move_one_axis_at_a_time(
-        current_pose, (Ex, Ey, Sz, 0.0, Spitch, Syaw), num_points
-    )
-    waypoints.extend(boundary_end_waypoints)
-    current_pose = tuple(waypoints[-1])
-
-    # -- 4) Move from current Z to Ez (and adopt final pitch/yaw if desired)
-    final_waypoints_z = move_one_axis_at_a_time(
-        current_pose, (Ex, Ey, Ez, 0.0, Epitch, Eyaw_), num_points
-    )
-    waypoints.extend(final_waypoints_z)
-    current_pose = tuple(waypoints[-1])
-
-    waypoints = np.array(waypoints)
-
-    # Ensure the last waypoint has the correct pitch and yaw
-    waypoints[:, 3] = 0.0      # Roll fixed to 0
-    waypoints[:, 4] = Epitch   # Match the target pitch
-    waypoints[:, 5] = Eyaw_    # Match the target yaw
-
-    # Convert to NumPy array
-    return waypoints
-
 
 def main():
-    #img_root = os.path.join(os.sep, "home", "dsr", "Documents", "demo", "mast3r", "dataset", "example")
+    # data root
     img_root = os.path.join(".", "dataset", "example")
-    #img_root = os.path.join(os.sep, "home", "dsr", "Documents", "demo", "mast3r", "dataset", "opera_house_marker_40d")
     
     # text path
     txt_file = os.path.join(img_root, "transform_record.txt")    
@@ -1370,39 +899,28 @@ def main():
     duster_model = AsymmetricMASt3R.from_pretrained(model_name).cuda()
 
     # initial rl model
-    model_name = os.path.join(os.sep, "home", "dsr", "Documents", "mad3d", "demo", "model", "model2.1", "model_4864000_steps.zip")
-    #model_name = os.path.join(os.sep, "home", "dsr", "Documents", "demo", "model", "camera_image_envsize20_30000rand_obja_lrsch_dilatednearest", "model_4864000_steps.zip")
+    model_name = os.path.join(os.sep, "home", "dsr", "Documents", "mad3d", "demo", "model", "model2.1", "model_4864000_steps.zip") 
     nbv_model = PPO_Cus.load(model_name)
-
-    I = np.array([[986.78, 0, 721.19], [0, 964.98, 547.47], [0, 0, 0]])
 
     destinations = []
 
-    #init_points = [[0.0136594, -0.896833, 1.23897, 0.0, 0.56, 1.55],
-    #               [0.371544, -0.892484, 1.20364, 0.0, 0.56, 1.96],
-    #               [0.632161, -0.663798, 1.21174, 0.0, 0.56, 2.2]]
-
-    # demo opera house
+    # opera house
     init_points = [[-1.0,  -1.34, 0.5, 0.0, 0.1, 1.0],
                    [-1.2,  -1.24, 0.6, 0.0, 0.2, 0.7],
                    [-1.1,  -1.34, 1.2, 0.0, 0.7, 0.7]]
-
-    # demo shifted opera house
+    # opera house (shifted)
     #init_points = [[-1.0,  -1.3, 1.4, 0.0, 0.8, 0.7],
     #               [-1.2,  -1.2, 0.6, 0.0, 0.4, 0.7],
     #               [-1.1,  -1.1, 1.2, 0.0, 0.75, 0.7]]
 
-    # Taipei
-    init_points = [[-1.0,  -1.34, 2.1, 0.0, 0.1, 1.0],
-                   [-1.2,  -1.24, 2.0, 0.0, 0.2, 0.7],
-                   [-1.1,  -1.34, 1.8, 0.0, 0.7, 0.7]]
+
 
     # three initial viewpoints
     write_waypoints_to_file([init_points[0]], os.path.join(img_root, f"waypoints_{0:02d}.txt"))
     write_waypoints_to_file([init_points[1]], os.path.join(img_root, f"waypoints_{1:02d}.txt"))
     write_waypoints_to_file([init_points[2]], os.path.join(img_root, f"waypoints_{2:02d}.txt"))
 
-    for i in range(3, 10, 1):
+    for i in range(3, 15, 1):
         # initial images (at least 2)
         while not get_new_images(imgs, i, img_root):
             print(f"{Fore.YELLOW}[{current_time()}] Waiting for new images...{Style.RESET_ALL}")
@@ -1418,28 +936,24 @@ def main():
 
         poses_trans = np.array(rpy_to_rotation_matrix(poses))
         # coordinate system is forward, left, up
-        local_pts3d, masks, duster_poses, duster_imgs = get_rescaled_depths(np.array(imgs), poses_trans, duster_model, I)
+        local_pts3d, masks, duster_poses, duster_imgs = get_rescaled_depths(np.array(imgs), poses_trans, duster_model)
         
         # xyzpy
         destination, occ = get_nbv(local_pts3d, masks, duster_poses, duster_imgs, nbv_model)
 
         # xyzrpy
-        waypoints = generate_waypoints(poses[-1], destination, n=10, h=2.2) #1.5)
-        #print(poses[-1], destination, ENV_SIZE, 15)
-        #waypoints = generate_waypoints_to_boundary(poses[-1], destination, ENV_SIZE, 5)
-        #waypoints = generate_waypoints_to_boundary(poses[-1], destination, w=ENV_SIZE, n=15, h=1.5)
-        #waypoints = find_path_with_fallback_3d(occ, poses[-1], destination)
-        print(waypoints)
-        #write_waypoints_to_file(waypoints, os.path.join(img_root, f"waypoints_{i:02d}.txt"))
+        waypoints = generate_waypoints(poses[-1], destination, n=10, h=1.5) #2.2)
+        #print(waypoints)
         write_waypoints_to_file(waypoints, os.path.join(img_root, f"waypoints_0{i}.txt"))
         # visualize waypoints if needed
-        visualize_waypoints(waypoints, poses[-1], destination)
+        if VIS:
+            visualize_waypoints(waypoints, poses[-1], destination)
 
         destinations.append(destination)
-        
-        #exit()
-        #if i%3==0:
-        visualize_world_point_cloud(local_pts3d, masks, duster_poses, duster_imgs)
+        print("---------------------------------------------------")
+        print("")
+        if VIS:
+            visualize_world_point_cloud(local_pts3d, masks, duster_poses, duster_imgs)
     
     destinations = [np.array([row[:3]+row[4:]]) for row in init_points] + destinations
     visualize_viewpoints(destinations)
